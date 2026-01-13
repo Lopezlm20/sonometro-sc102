@@ -1,0 +1,349 @@
+import tkinter as tk
+from tkinter import ttk, filedialog, messagebox
+import pandas as pd
+import datetime
+import serial
+import re
+import time
+
+# ------------------------------------------------------------
+# CONFIGURACIÓN DEL PUERTO SERIE
+# ------------------------------------------------------------
+puerto = serial.Serial("COM3", 57600, timeout=1)
+
+# ------------------------------------------------------------
+# PARSER: convierte el texto en lista de (clave, valor)
+# ------------------------------------------------------------
+def parsear_datos_crudos(raw):
+    raw = raw.replace("\r", "").replace("\n\n", "\n")
+    lineas = [l.strip() for l in raw.split("\n") if l.strip()]
+    mediciones = []
+
+    patron = re.compile(r"([A-Za-z0-9]+)\s+([0-9]+\.[0-9]+)")
+
+    for linea in lineas:
+        matches = patron.findall(linea)
+        for key, val in matches:
+            try:
+                mediciones.append((key, float(val)))
+            except:
+                pass
+
+    return mediciones
+
+# ------------------------------------------------------------
+# VARIABLES DE ESTADO
+# ------------------------------------------------------------
+running = False
+paused = False
+data = []
+
+# ------------------------------------------------------------
+# COMANDOS AL SONÓMETRO
+# ------------------------------------------------------------
+def enviar_comando(cmd):
+    try:
+        puerto.write((cmd + "\r").encode("ascii"))
+    except:
+        pass
+
+# ------------------------------------------------------------
+# LECTURA: devuelve UN diccionario con todos los valores
+# ------------------------------------------------------------
+def leer_datos_del_sonometro():
+    raw = puerto.read_all().decode("ascii", errors="ignore")
+    if not raw.strip():
+        return None
+
+    pares = parsear_datos_crudos(raw)
+    if not pares:
+        return None
+
+    timestamp = datetime.datetime.now().strftime("%H:%M:%S")
+
+    # Agrupar todos los valores en UN SOLO diccionario
+    fila = {"timestamp": timestamp}
+    for key, val in pares:
+        fila[key] = val
+
+    return fila
+
+# ------------------------------------------------------------
+# ACTUALIZAR CONTADOR DE MEDICIONES
+# ------------------------------------------------------------
+def actualizar_contador():
+    lbl_contador.config(text=f"Mediciones: {len(data)}")
+
+# ------------------------------------------------------------
+# PLAY
+# ------------------------------------------------------------
+def play():
+    global running, paused, data
+
+    if not puerto.is_open:
+        puerto.open()
+
+    # Solo limpiar si NO venimos de un pause
+    if not paused:
+        data = []
+        # Limpiar la tabla visual
+        for item in tree.get_children():
+            tree.delete(item)
+        actualizar_contador()
+
+    running = True
+    paused = False
+
+    enviar_comando("1")
+
+    btn_play.config(state="disabled")
+    btn_pause.config(state="normal")
+    btn_stop.config(state="normal")
+    
+    lbl_estado.config(text="● GRABANDO", foreground="#00c853")
+
+    medir_cada_segundo()
+
+# ------------------------------------------------------------
+# PAUSE
+# ------------------------------------------------------------
+def pause():
+    global paused
+    paused = True
+    enviar_comando("2")
+
+    btn_pause.config(state="disabled")
+    btn_play.config(state="normal")
+    
+    lbl_estado.config(text="⏸ PAUSADO", foreground="#ff9800")
+
+# ------------------------------------------------------------
+# STOP
+# ------------------------------------------------------------
+def stop():
+    global running, paused
+
+    running = False
+    paused = False
+
+    try:
+        enviar_comando("0")
+        time.sleep(0.2)
+    except:
+        pass
+
+    try:
+        puerto.close()
+    except:
+        pass
+
+    btn_play.config(state="normal")
+    btn_pause.config(state="disabled")
+    btn_stop.config(state="disabled")
+    
+    lbl_estado.config(text="■ DETENIDO", foreground="#757575")
+
+    if not data:
+        messagebox.showwarning("Sin datos", "No se registraron mediciones.")
+        return
+
+    archivo = filedialog.asksaveasfilename(
+        defaultextension=".xlsx",
+        filetypes=[("Excel", "*.xlsx")],
+        title="Guardar mediciones"
+    )
+
+    if archivo:
+        df = pd.DataFrame(data)
+        df.to_excel(archivo, index=False)
+        messagebox.showinfo("Excel guardado", f"Archivo guardado exitosamente:\n{archivo}")
+
+# ------------------------------------------------------------
+# MEDICIÓN PERIÓDICA
+# ------------------------------------------------------------
+def medir_cada_segundo():
+    if not running:
+        return
+
+    if not paused:
+        fila_dict = leer_datos_del_sonometro()
+        if fila_dict:
+            data.append(fila_dict)
+
+            # Insertar UNA SOLA fila en la GUI
+            fila_gui = [fila_dict.get(col, "") for col in columns]
+            tree.insert("", "end", values=fila_gui)
+            
+            # Auto-scroll hacia abajo
+            tree.see(tree.get_children()[-1])
+            
+            actualizar_contador()
+
+    root.after(1000, medir_cada_segundo)
+
+# ------------------------------------------------------------
+# GUI
+# ------------------------------------------------------------
+root = tk.Tk()
+root.title("Medición Sonómetro")
+root.geometry("1200x650")
+root.configure(bg="#f5f5f5")
+
+# Estilo personalizado
+style = ttk.Style()
+style.theme_use("clam")
+
+# Estilo para los botones
+style.configure("Play.TButton", 
+                padding=10, 
+                font=("Segoe UI", 10, "bold"),
+                background="#4CAF50",
+                foreground="white")
+
+style.configure("Pause.TButton", 
+                padding=10, 
+                font=("Segoe UI", 10, "bold"),
+                background="#FF9800",
+                foreground="white")
+
+style.configure("Stop.TButton", 
+                padding=10, 
+                font=("Segoe UI", 10, "bold"),
+                background="#f44336",
+                foreground="white")
+
+style.map("Play.TButton", background=[("active", "#45a049")])
+style.map("Pause.TButton", background=[("active", "#fb8c00")])
+style.map("Stop.TButton", background=[("active", "#e53935")])
+
+# Frame principal
+main_frame = tk.Frame(root, bg="#f5f5f5")
+main_frame.pack(fill="both", expand=True, padx=15, pady=15)
+
+# HEADER: Título y estado
+header_frame = tk.Frame(main_frame, bg="#ffffff", relief="flat", bd=0)
+header_frame.pack(fill="x", pady=(0, 15))
+
+titulo_frame = tk.Frame(header_frame, bg="#1976d2", height=80)
+titulo_frame.pack(fill="x")
+
+lbl_titulo = tk.Label(titulo_frame, 
+                      text="🎵 Medición Sonómetro", 
+                      font=("Segoe UI", 20, "bold"),
+                      bg="#1976d2",
+                      fg="white",
+                      pady=20)
+lbl_titulo.pack()
+
+# Frame de info (estado y contador)
+info_frame = tk.Frame(header_frame, bg="#ffffff", pady=15)
+info_frame.pack(fill="x")
+
+lbl_estado = tk.Label(info_frame, 
+                      text="■ DETENIDO", 
+                      font=("Segoe UI", 12, "bold"),
+                      bg="#ffffff",
+                      fg="#757575")
+lbl_estado.pack(side="left", padx=20)
+
+lbl_contador = tk.Label(info_frame, 
+                        text="Mediciones: 0", 
+                        font=("Segoe UI", 11),
+                        bg="#ffffff",
+                        fg="#424242")
+lbl_contador.pack(side="right", padx=20)
+
+# CONTROLES: Botones
+control_frame = tk.Frame(main_frame, bg="#ffffff", pady=15)
+control_frame.pack(fill="x", pady=(0, 15))
+
+btn_play = ttk.Button(control_frame, 
+                      text="▶  Iniciar", 
+                      command=play,
+                      style="Play.TButton",
+                      width=15)
+btn_play.pack(side="left", padx=15)
+
+btn_pause = ttk.Button(control_frame, 
+                       text="⏸  Pausar", 
+                       command=pause,
+                       style="Pause.TButton",
+                       width=15)
+btn_pause.pack(side="left", padx=15)
+
+btn_stop = ttk.Button(control_frame, 
+                      text="■  Detener y Guardar", 
+                      command=stop,
+                      style="Stop.TButton",
+                      width=20)
+btn_stop.pack(side="left", padx=15)
+
+btn_pause.config(state="disabled")
+btn_stop.config(state="disabled")
+
+# TABLA: Datos
+table_frame = tk.Frame(main_frame, bg="#ffffff", relief="flat")
+table_frame.pack(fill="both", expand=True)
+
+# Scrollbars
+scroll_y = ttk.Scrollbar(table_frame, orient="vertical")
+scroll_x = ttk.Scrollbar(table_frame, orient="horizontal")
+
+columns = [
+    "timestamp",
+    "LCt", "LAt",
+    "LCF", "LCFmin", "LCFmax",
+    "LAF", "LAFmin", "LAFmax",
+    "LAS", "LASmin", "LASmax"
+]
+
+tree = ttk.Treeview(table_frame, 
+                    columns=columns, 
+                    show="headings", 
+                    height=20,
+                    yscrollcommand=scroll_y.set,
+                    xscrollcommand=scroll_x.set)
+
+scroll_y.config(command=tree.yview)
+scroll_x.config(command=tree.xview)
+
+# Configurar columnas
+tree.column("timestamp", width=90, anchor="center")
+for col in columns[1:]:
+    tree.heading(col, text=col)
+    tree.column(col, width=85, anchor="center")
+
+tree.heading("timestamp", text="Hora")
+
+# Estilo de filas alternadas
+style.configure("Treeview",
+                background="#ffffff",
+                foreground="#212121",
+                rowheight=28,
+                fieldbackground="#ffffff",
+                font=("Segoe UI", 9))
+
+style.configure("Treeview.Heading",
+                background="#1976d2",
+                foreground="white",
+                font=("Segoe UI", 10, "bold"))
+
+style.map("Treeview",
+          background=[("selected", "#2196f3")])
+
+tree.pack(side="left", fill="both", expand=True)
+scroll_y.pack(side="right", fill="y")
+scroll_x.pack(side="bottom", fill="x")
+
+# Footer
+footer_frame = tk.Frame(main_frame, bg="#f5f5f5", pady=10)
+footer_frame.pack(fill="x", pady=(10, 0))
+
+lbl_footer = tk.Label(footer_frame, 
+                      text="Puerto: COM3 | Baudrate: 57600 | Intervalo: 1 segundo", 
+                      font=("Segoe UI", 9),
+                      bg="#f5f5f5",
+                      fg="#757575")
+lbl_footer.pack()
+
+root.mainloop()
