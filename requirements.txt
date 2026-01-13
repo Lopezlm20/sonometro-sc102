@@ -1,0 +1,5 @@
+pandas
+paho-mqtt
+nest_asyncio
+pyserial
+tk
