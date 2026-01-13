@@ -1,0 +1,18 @@
+# Python cache
+__pycache__/
+*.pyc
+
+# Entornos virtuales
+venv/
+env/
+
+# Archivos generados
+*.csv
+*.xlsx
+*.log
+
+# Carpeta para datos locales
+data/
+
+# Configuraciones privadas (si algún día agregás una)
+*.env
